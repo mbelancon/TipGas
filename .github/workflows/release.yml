@@ -1,0 +1,97 @@
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi make
+      - name: Build firmware
+        working-directory: firmware/TipGas_F411
+        run: make -j4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware/TipGas_F411/build/TipGas_F411.hex
+            firmware/TipGas_F411/build/TipGas_F411.bin
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pyserial
+      - name: Core tests (simulator)
+        working-directory: interface
+        run: python tests/test_core.py
+
+  windows-portable:
+    needs: [firmware, tests]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install "PySide6-Essentials>=6.5" "pyqtgraph>=0.13" "pyserial>=3.5" "numpy>=1.24" pyinstaller
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: fw
+      - name: Build portable zip
+        run: python packaging/build_portable.py --firmware fw/TipGas_F411.hex fw/TipGas_F411.bin
+      - name: Smoke test (start, then close after a few seconds)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "build_portable/TipGas-*/TipGas.exe").Path
+          $p = Start-Process -FilePath $exe -ArgumentList "--sim" -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "TipGas.exe exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, windows-portable]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Release notes from CHANGELOG
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '$0 ~ "^## "v {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          cat >> notes.md <<'EOF'
+
+          ### Downloads
+          - **TipGas-…-windows-portable.zip** — unzip and run `TipGas.exe` (Windows 10/11, 64-bit). No installation needed; includes the firmware.
+          - **TipGas_F411.hex / .bin** — firmware for the STM32F411 Black Pill. See [docs/flashing.md](docs/flashing.md).
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: TipGas ${{ github.ref_name }}
+          body_path: notes.md
+          files: |
+            out/windows-portable/*.zip
+            out/firmware/TipGas_F411.hex
+            out/firmware/TipGas_F411.bin

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+firmware/TipGas_F411/build/
+firmware/TipGas_F411/Debug/
+firmware/TipGas_F411/Release/
+firmware/TipGas_F411/.settings/
+dist/
+build_portable/
+*.spec
+*.zip
+.vscode/
+.idea/
